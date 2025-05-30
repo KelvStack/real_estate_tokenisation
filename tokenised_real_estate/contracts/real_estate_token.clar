@@ -370,3 +370,120 @@
     (ok true)
   )
 )
+
+;; Cancel a token listing
+(define-public (cancel-token-listing (listing-id uint))
+  (let ((listing (unwrap! (map-get? token-listings listing-id) err-listing-not-found)))
+    (asserts! (is-eq tx-sender (get seller listing)) err-unauthorized)
+    (asserts! (get active listing) err-listing-not-found)
+    
+    (map-set token-listings listing-id 
+      (merge listing { active: false })
+    )
+    
+    (ok true)
+  )
+)
+
+;; Transfer tokens to another user
+(define-public (transfer-tokens (property-id uint) (token-amount uint) (recipient principal))
+  (let (
+    (sender-ownership (unwrap! (map-get? token-ownership 
+                                { property-id: property-id, owner: tx-sender }) 
+                      err-not-token-owner))
+  )
+    (asserts! (not (var-get contract-paused)) err-unauthorized)
+    (asserts! (>= (get token-count sender-ownership) token-amount) err-insufficient-tokens)
+    (asserts! (> token-amount u0) err-invalid-token-amount)
+    (asserts! (not (is-eq tx-sender recipient)) err-unauthorized)
+    
+    ;; Update sender's token ownership
+    (map-set token-ownership 
+      { property-id: property-id, owner: tx-sender }
+      { token-count: (- (get token-count sender-ownership) token-amount) }
+    )
+    
+    ;; Update recipient's token ownership
+    (let ((recipient-ownership (default-to { token-count: u0 } 
+                                (map-get? token-ownership { property-id: property-id, owner: recipient }))))
+      (map-set token-ownership 
+        { property-id: property-id, owner: recipient }
+        { token-count: (+ (get token-count recipient-ownership) token-amount) }
+      )
+    )
+    
+    ;; Log the transaction
+    (log-transaction property-id tx-sender recipient u0 token-amount "TRANSFER")
+    
+    (ok true)
+  )
+)
+
+;; Contract administration functions
+
+;; Pause/Unpause the contract
+(define-public (set-contract-pause (paused bool))
+  (begin
+    (asserts! (is-contract-owner) err-owner-only)
+    (var-set contract-paused paused)
+    (ok true)
+  )
+)
+
+;; Withdraw platform fees
+(define-public (withdraw-platform-fees (amount uint))
+  (begin
+    (asserts! (is-contract-owner) err-owner-only)
+    (asserts! (<= amount (var-get platform-revenue)) err-insufficient-tokens)
+    (try! (as-contract (stx-transfer? amount contract-owner tx-sender)))
+    (var-set platform-revenue (- (var-get platform-revenue) amount))
+    (ok true)
+  )
+)
+
+
+;; Read-only functions
+
+;; Get property details
+(define-read-only (get-property (property-id uint))
+  (map-get? properties property-id)
+)
+
+;; Get token details for a property
+(define-read-only (get-property-tokens (property-id uint))
+  (map-get? property-tokens property-id)
+)
+
+;; Get user's token ownership for a property
+(define-read-only (get-token-balance (property-id uint) (owner principal))
+  (default-to { token-count: u0 } 
+    (map-get? token-ownership { property-id: property-id, owner: owner })
+  )
+)
+
+;; Get listing details
+(define-read-only (get-token-listing (listing-id uint))
+  (map-get? token-listings listing-id)
+)
+
+;; Get transaction details
+(define-read-only (get-transaction (transaction-id uint))
+  (map-get? property-transactions transaction-id)
+)
+
+;; Get all properties owned by a user
+(define-read-only (get-user-properties (user principal))
+  (default-to { owned-properties: (list) } (map-get? user-properties user))
+)
+
+;; Get contract statistics
+(define-read-only (get-contract-stats)
+  {
+    total-properties: (var-get total-properties),
+    total-listings: (var-get total-listings),
+    total-transactions: (var-get total-transactions),
+    platform-revenue: (var-get platform-revenue),
+    contract-paused: (var-get contract-paused)
+  }
+)
+
